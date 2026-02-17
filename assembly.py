@@ -3,7 +3,7 @@
 This script performs a simple iterative reference-guided polishing loop:
 
 - maps reads to a reference with `minimap2` + `samtools`
-- calls variants (using `clair3` if available, otherwise `bcftools`)
+- calls variants (using `clair3`)
 - applies variants to produce a consensus with `bcftools consensus`
 - repeats until the consensus stabilizes or `--max-iterations` is reached
 - masks low-coverage positions in the final consensus
