@@ -10,9 +10,6 @@ This script performs a simple iterative reference-guided polishing loop:
 
 The environment dependencies are expected to be installed via the provided
 `env/env.yaml` conda environment.
-
-The implementation favors robust command fallbacks (bcftools) so it can run
-even if `clair3` is not installed.
 """
 
 from __future__ import annotations
@@ -24,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import gzip
 from pathlib import Path
 
 from Bio import SeqIO
@@ -128,6 +126,25 @@ def cap_coverage(in_bam: Path, out_bam: Path, reference: Path, target_coverage: 
         shutil.copy2(in_bam, out_bam)
 
 
+def get_mapped_reads(mapped_bam: Path, capped_reads: Path, logger: logging.Logger):
+    """
+    Get mapped reads from BAM and write to FASTQ.
+    
+    :param mapped_bam: Description
+    :type mapped_bam: Path
+    :param capped_reads: Description
+    :type capped_reads: Path
+    :param logger: Description
+    :type logger: logging.Logger
+    """
+    logger.info("Extracting mapped reads from %s -> %s using samtools fastq", mapped_bam, capped_reads)
+    # Exclude unmapped (4), secondary (256) and supplementary (2048) reads -> -F 2308
+    # This uses samtools C implementation which is much faster for bulk extraction.
+    cmd = ["samtools", "fastq", "-F", "2308", str(mapped_bam)]
+    with open(capped_reads, "wt") as out:
+        subprocess.run(cmd, check=True, stdout=out)
+
+
 def call_variants_with_clair3(reference: Path, bam: Path, vcf_out: Path, model: str | None, threads: int, logger: logging.Logger):
     """Call variants with Clair3.
 
@@ -181,8 +198,6 @@ def call_variants_with_clair3(reference: Path, bam: Path, vcf_out: Path, model: 
         shutil.copy2(vcf_found, vcf_out.with_suffix(vcf_out.suffix + ".gz"))
         # try to gunzip to plain vcf
         try:
-            import gzip
-
             with gzip.open(vcf_found, "rt") as inf, open(vcf_out, "wt") as outf:
                 shutil.copyfileobj(inf, outf)
         except Exception:
@@ -229,6 +244,7 @@ def filter_vcf(vcf_in: Path, vcf_out: Path, min_depth: int, min_qual: float, log
     invcf.close()
     outvcf.close()
     logger.info("Wrote %d filtered records to %s", written, vcf_out)
+    return written
 
 
 def make_consensus(reference: Path, vcf: Path, out_fasta: Path, logger: logging.Logger):
@@ -277,7 +293,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-depth", type=int, default=3)
     p.add_argument("--min-quality", type=float, default=20.0)
     p.add_argument("--min-depth-final", type=int, default=3)
-    p.add_argument("--max-iterations", type=int, default=20)
+    p.add_argument("--max-iterations-inner", type=int, default=20)
+    p.add_argument("--max-iterations-outer", type=int, default=5)
     p.add_argument("--threads", type=int, default=4)
     return p.parse_args()
 
@@ -291,48 +308,72 @@ def main():
 
     try:
         threads = args.threads
-
-        # initial mapping
         current_ref = Path(args.reference).resolve()
-        mapped_bam = tmpdir / "mapped.sorted.bam"
-        map_reads(current_ref, args.reads, mapped_bam, threads, args.minimap_window_size, args.minimap_kmer_size, logger)
 
-        # optional coverage cap
-        capped_bam = tmpdir / "mapped.capped.bam"
-        cap_coverage(mapped_bam, capped_bam, current_ref, args.cov_lim, threads, logger)
+        for i in range(args.max_iterations_outer):
+            logger.info("Outer iteration %d/%d", i+1, args.max_iterations_outer)
 
-        # iterative polishing
-        prev_consensus = None
-        for it in range(1, args.max_iterations + 1):
-            logger.info("Iteration %d", it)
-            # map reads to current reference
-            iter_bam = tmpdir / f"iter_{it}.sorted.bam"
-            map_reads(current_ref, args.reads, iter_bam, threads, args.minimap_window_size, args.minimap_kmer_size, logger)
+            # initial mapping
+            tmp_mapped_bam = tmpdir / "mapped.sorted.bam"
+            map_reads(current_ref, args.reads, tmp_mapped_bam, threads, args.minimap_window_size, args.minimap_kmer_size, logger)
 
-            # call variants with Clair3
-            raw_vcf = tmpdir / f"iter_{it}.raw.vcf"
-            call_variants_with_clair3(current_ref, iter_bam, raw_vcf, args.clair3_model, threads, logger)
+            # optional coverage cap
+            mapped_bam = tmpdir / "mapped.capped.bam"
+            cap_coverage(tmp_mapped_bam, mapped_bam, current_ref, args.cov_lim, threads, logger)
 
-            # filter
-            filt_vcf = tmpdir / f"iter_{it}.filt.vcf"
-            filter_vcf(raw_vcf, filt_vcf, args.min_depth, args.min_quality, logger)
+            # get reads corresponding to mapped_bam for next steps; for now we just keep the bam and re-map in each iteration
+            capped_reads = tmpdir / "reads.capped.fastq"
+            get_mapped_reads(mapped_bam, capped_reads, logger)
 
-            # make consensus
-            consensus = tmpdir / f"consensus_iter_{it}.fa"
-            make_consensus(current_ref, filt_vcf, consensus, logger)
+            tmp_mapped_bam.unlink()
 
-            # compare
-            with open(consensus, "rb") as fhc, open(current_ref, "rb") as fhr:
-                new_bytes = fhc.read()
-                old_bytes = fhr.read()
-            if new_bytes == old_bytes:
-                logger.info("Consensus stabilized at iteration %d", it)
+            # iterative polishing
+            for j in range(args.max_iterations_inner):
+                logger.info("Iteration %d-%d", i+1, j+1)
+
+                it = f'{i+1}_{j+1}'
+
+                iter_bam = tmpdir / f"iter_{it}.sorted.bam"
+                if j == 0:
+                    logger.info("Using initial mapping for iteration %d-%d", i+1, j+1)
+                    # for the first iteration, we can use the existing mapped bam and current_ref
+                    # but we need to ensure it's sorted and indexed as expected by Clair3
+                    shutil.move(mapped_bam, iter_bam)
+                    run(["samtools", "index", str(iter_bam)], logger)
+                else:
+                    # for subsequent iterations, we need to re-map reads to the current reference
+                    logger.info("Re-mapping reads for iteration %d-%d", i+1, j+1)
+                    map_reads(current_ref, args.reads, iter_bam, threads, args.minimap_window_size, args.minimap_kmer_size, logger)
+
+                # call variants with Clair3
+                raw_vcf = tmpdir / f"iter_{it}.raw.vcf"
+                call_variants_with_clair3(current_ref, iter_bam, raw_vcf, args.clair3_model, threads, logger)
+
+                # filter
+                filt_vcf = tmpdir / f"iter_{it}.filt.vcf"
+                n_variants = filter_vcf(raw_vcf, filt_vcf, args.min_depth, args.min_quality, logger)
+
+                # make consensus
+                consensus = tmpdir / f"consensus_iter_{it}.fa"
+                make_consensus(current_ref, filt_vcf, consensus, logger)
+
+                # compare
+                if n_variants == 0:
+                    logger.info("Consensus stabilized at iteration %d", it)
+                    break
+                # else set current_ref to consensus and continue
+                # write consensus to file used as reference for next iteration
+                next_ref = tmpdir / f"current_ref_iter_{it}.fa"
+                shutil.move(consensus, next_ref)
+                current_ref = next_ref
+
+                # delete temporary files from this iteration to save space
+                for f in tmpdir.glob(f"iter_{it}.*"):
+                    f.unlink()
+
+            if j == 0 and n_variants == 0:
+                logger.info("Consensus stabilized at iteration %d-%d with 0 variants; stopping outer loop", i+1, j+1)
                 break
-            # else set current_ref to consensus and continue
-            # write consensus to file used as reference for next iteration
-            next_ref = tmpdir / f"current_ref_iter_{it}.fa"
-            shutil.copy2(consensus, next_ref)
-            current_ref = next_ref
 
         # final masking
         final_consensus = args.output
