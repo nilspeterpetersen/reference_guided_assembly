@@ -203,7 +203,12 @@ def filter_vcf(vcf_in: Path, vcf_out: Path, min_depth: int, min_qual: float, log
     """
     logger.info("Filtering VCF %s -> %s (min_depth=%s, min_qual=%s)", vcf_in, vcf_out, min_depth, min_qual)
     invcf = pysam.VariantFile(str(vcf_in))
-    outvcf = pysam.VariantFile(str(vcf_out), mode="w", header=invcf.header)
+
+    # Write compressed VCF for bcftools compatibility
+    if str(vcf_out).endswith('.gz'):
+        outvcf = pysam.VariantFile(str(vcf_out), mode="wz", header=invcf.header)
+    else:
+        outvcf = pysam.VariantFile(str(vcf_out), mode="w", header=invcf.header)
 
     written = 0
     for rec in invcf:
@@ -237,7 +242,17 @@ def filter_vcf(vcf_in: Path, vcf_out: Path, min_depth: int, min_qual: float, log
 
 def make_consensus(reference: Path, vcf: Path, out_fasta: Path, logger: logging.Logger):
     logger.info("Generating consensus with bcftools consensus -> %s", out_fasta)
-    run(["bcftools", "consensus", "-f", str(reference), str(vcf), "-o", str(out_fasta)], logger)
+    # If vcf is not compressed, compress and index it using bcftools (needs .vcf.gz + .csi/ .tbi index)
+    vcf_gz = vcf
+    if not str(vcf).endswith(".gz"):
+        vcf_gz = vcf.with_suffix(str(vcf.suffix) + ".gz")
+        logger.info("Compressing VCF to %s", vcf_gz)
+        run(["bcftools", "view", "-Oz", "-o", str(vcf_gz), str(vcf)], logger)
+
+    logger.info("Indexing VCF %s", vcf_gz)
+    run(["bcftools", "index", "-f", str(vcf_gz)], logger)
+
+    run(["bcftools", "consensus", "-f", str(reference), str(vcf_gz), "-o", str(out_fasta)], logger)
 
 
 def mask_low_coverage(consensus_fasta: Path, bam: Path, min_depth_final: int, logger: logging.Logger):
@@ -365,7 +380,7 @@ def main():
                 )
 
                 # filter
-                filt_vcf = tmpdir / f"iter_{it}.filt.vcf"
+                filt_vcf = tmpdir / f"iter_{it}.filt.vcf.gz"
                 n_variants = filter_vcf(raw_vcf, filt_vcf, args.min_depth, args.min_quality, logger)
 
                 # make consensus
@@ -397,6 +412,8 @@ def main():
         map_reads(current_ref, args.reads, final_bam, threads, args.minimap_window_size, args.minimap_kmer_size, logger)
         shutil.copy2(current_ref, final_consensus)
         mask_low_coverage(final_consensus, final_bam, args.min_depth_final, logger)
+
+        # TODO: also mask low-quality variants in the final consensus? Clair3 provides a QUAL score for each variant which could be used to mask uncertain positions as 'N' in the final consensus.
 
         logger.info("Final consensus written to %s", final_consensus)
         logger.info("Log file: %s", log_file)
