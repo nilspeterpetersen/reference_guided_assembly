@@ -182,6 +182,7 @@ def call_variants_with_clair3(
         "--enable_variant_calling_at_sequence_head_and_tail",
         "--include_all_ctgs",
         "--enable_long_indel",
+        "--no_phasing_for_fa",
     ]
 
     try:
@@ -288,6 +289,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Reference-guided iterative polishing")
     p.add_argument("--reference", "-r", required=True, type=Path, help="Reference FASTA")
     p.add_argument("--reads", "-i", required=True, type=Path, help="Reads FASTQ (single-end) or BAM")
+    p.add_argument("--log-file", type=Path, default=None, help="Path to log file (default: tmpdir/run.log)")
     p.add_argument("--clair3-model", type=str, required=True, help="Path to clair3 model or 'auto'")
     p.add_argument("--clair-chunk-size", type=int, default=2000, help="Clair3 chunk size for parallelization")
     p.add_argument("--cov-lim", type=int, default=50, help="Coverage cap (0 or None disables)")
@@ -306,9 +308,13 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
     tmpdir = Path(tempfile.mkdtemp(prefix="rga_"))
-    log_file = tmpdir / "run.log"
+    log_file = args.log_file if args.log_file is not None else tmpdir / "run.log"
+    if args.log_file is None:
+        logger_path_info = f" (temporary log: {log_file})"
+    else:
+        logger_path_info = ""
     logger = setup_logger(log_file)
-    logger.info("Working directory: %s", tmpdir)
+    logger.info("Working directory: %s%s", tmpdir, logger_path_info)
 
     try:
         threads = args.threads
@@ -389,7 +395,7 @@ def main():
 
                 # compare
                 if n_variants == 0:
-                    logger.info("Consensus stabilized at iteration %d", it)
+                    logger.info(f"Consensus stabilized at iteration {it}")
                     break
                 # else set current_ref to consensus and continue
                 # write consensus to file used as reference for next iteration
@@ -402,7 +408,7 @@ def main():
                     f.unlink()
 
             if j == 0 and n_variants == 0:
-                logger.info("Consensus stabilized at iteration %d-%d with 0 variants; stopping outer loop", i+1, j+1)
+                logger.info(f"Consensus stabilized at iteration {i+1}-{j+1} with 0 variants; stopping outer loop")
                 break
 
         # final masking

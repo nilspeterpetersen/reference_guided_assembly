@@ -19,3 +19,8 @@ Notes:
   arguments passed to `docker run` are forwarded to `assembly.py`.
 - Building the image downloads and installs conda packages; the build can take several minutes.
 - If you prefer a different base image or want the image to be slimmer, I can switch to a multi-stage build or reduce packages.
+
+
+Example run
+- python /src/assembly.py -r /src/test_data/NC_004296.1.fasta --clair3-model /src/clair_models/rerio/clair3_models/r1041_e82_400bps_hac_v520/ -i /src/test_data/reads.AY628201.1.fq
+
