@@ -26,7 +26,6 @@ from pathlib import Path
 
 from Bio import SeqIO
 import pysam
-import os
 
 
 def setup_logger(log_file: Path) -> logging.Logger:
@@ -107,7 +106,10 @@ def cap_coverage(in_bam: Path, out_bam: Path, reference: Path, target_coverage: 
 
     # try to run jvarkit pipeline; fallback: leave as-is
     try:
-        run(["jvarkit", "sortsamrefname", str(in_bam), "-o", str(in_bam.with_name("refname_sorted.bam"))], logger)
+        run(
+            ["jvarkit", "sortsamrefname", str(in_bam), "-o", str(in_bam.with_name("refname_sorted.bam"))],
+            logger
+        )
         run([
             "jvarkit",
             "biostar154220",
@@ -145,32 +147,42 @@ def get_mapped_reads(mapped_bam: Path, capped_reads: Path, logger: logging.Logge
         subprocess.run(cmd, check=True, stdout=out)
 
 
-def call_variants_with_clair3(reference: Path, bam: Path, vcf_out: Path, model: str | None, threads: int, logger: logging.Logger):
+def call_variants_with_clair3(
+        reference: Path,
+        bam: Path,
+        vcf_out: Path,
+        tmp_clair3_outdir: Path,
+        model: Path,
+        min_coverage: int,
+        chunk_size: int,
+        threads: int,
+        logger: logging.Logger
+):
     """Call variants with Clair3.
-
-    This function expects a `clair3` CLI to be available in PATH. It will
-    create a temporary output folder for Clair3 and then locate the produced
-    VCF (gz or plain) and copy it to `vcf_out`.
     """
     logger.info("Calling variants with Clair3 -> %s", vcf_out)
-    outdir = vcf_out.with_suffix("").with_name(vcf_out.stem + ".clair3_out")
-    outdir.mkdir(parents=True, exist_ok=True)
+
+    # Index the reference if not already indexed
+    ref_fai = reference.with_suffix(reference.suffix + ".fai")
+    if not ref_fai.exists():
+        logger.info("Indexing reference with samtools faidx")
+        run(["samtools", "faidx", str(reference)], logger)
 
     cmd = [
-        "clair3",
-        "--bam",
-        str(bam),
-        "--ref",
-        str(reference),
-        "--threads",
-        str(threads),
-        "--output",
-        str(outdir),
+        "run_clair3.sh",
+        f"--model_path={model}",
+        f"--chunk_size={chunk_size}",
+        f"--min_coverage={min_coverage}",
+        f"--bam={bam}",
+        f"--ref_fn={reference}",
+        f"--threads={threads}",
+        f"--output={tmp_clair3_outdir}",
+        "--platform=ont",
+        "--haploid_precise",
+        "--enable_variant_calling_at_sequence_head_and_tail",
+        "--include_all_ctgs",
+        "--enable_long_indel",
     ]
-    if model:
-        cmd += ["--model_path", str(model)]
-    # platform default to ont; user can change this in the future
-    cmd += ["--platform", "ont"]
 
     try:
         run(cmd, logger)
@@ -178,33 +190,9 @@ def call_variants_with_clair3(reference: Path, bam: Path, vcf_out: Path, model: 
         logger.exception("Clair3 failed: %s", e)
         raise
 
-    # find VCF in outdir
-    vcf_found = None
-    for root, _, files in os.walk(outdir):
-        for f in files:
-            if f.endswith(".vcf") or f.endswith(".vcf.gz"):
-                vcf_found = Path(root) / f
-                break
-        if vcf_found:
-            break
-
-    if not vcf_found:
-        raise FileNotFoundError(f"No VCF produced by Clair3 in {outdir}")
-
-    # if gzipped, uncompress to plain VCF (pysam can read gz too, but keep plain)
-    if vcf_found.suffix == ".gz":
-        logger.info("Copying gzipped VCF produced by Clair3 -> %s", vcf_out)
-        # copy the gz and also try to index via pysam if needed
-        shutil.copy2(vcf_found, vcf_out.with_suffix(vcf_out.suffix + ".gz"))
-        # try to gunzip to plain vcf
-        try:
-            with gzip.open(vcf_found, "rt") as inf, open(vcf_out, "wt") as outf:
-                shutil.copyfileobj(inf, outf)
-        except Exception:
-            # fallback: copy gz as-is and let downstream code handle gz
-            shutil.copy2(vcf_found, vcf_out)
-    else:
-        shutil.copy2(vcf_found, vcf_out)
+    # clair_out/merge_output.vcf.gz to vcf_out
+    with gzip.open(f"{tmp_clair3_outdir}/merge_output.vcf.gz", "rt") as f, vcf_out.open("wt") as outf:
+        shutil.copyfileobj(f, outf)
 
 
 def filter_vcf(vcf_in: Path, vcf_out: Path, min_depth: int, min_qual: float, logger: logging.Logger):
@@ -285,14 +273,15 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Reference-guided iterative polishing")
     p.add_argument("--reference", "-r", required=True, type=Path, help="Reference FASTA")
     p.add_argument("--reads", "-i", required=True, type=Path, help="Reads FASTQ (single-end) or BAM")
-    p.add_argument("--clair3-model", type=str, default=None, help="Path to clair3 model or 'auto'")
+    p.add_argument("--clair3-model", type=str, required=True, help="Path to clair3 model or 'auto'")
+    p.add_argument("--clair-chunk-size", type=int, default=2000, help="Clair3 chunk size for parallelization")
     p.add_argument("--cov-lim", type=int, default=50, help="Coverage cap (0 or None disables)")
     p.add_argument("--minimap-window-size", type=int, default=5)
     p.add_argument("--minimap-kmer-size", type=int, default=11)
     p.add_argument("--output", "-o", type=Path, default=Path("consensus_genome.fasta"))
-    p.add_argument("--min-depth", type=int, default=3)
+    p.add_argument("--min-depth", type=int, default=2)
     p.add_argument("--min-quality", type=float, default=20.0)
-    p.add_argument("--min-depth-final", type=int, default=3)
+    p.add_argument("--min-depth-final", type=int, default=10)
     p.add_argument("--max-iterations-inner", type=int, default=20)
     p.add_argument("--max-iterations-outer", type=int, default=5)
     p.add_argument("--threads", type=int, default=4)
@@ -315,7 +304,15 @@ def main():
 
             # initial mapping
             tmp_mapped_bam = tmpdir / "mapped.sorted.bam"
-            map_reads(current_ref, args.reads, tmp_mapped_bam, threads, args.minimap_window_size, args.minimap_kmer_size, logger)
+            map_reads(
+                current_ref,
+                args.reads,
+                tmp_mapped_bam,
+                threads,
+                args.minimap_window_size,
+                args.minimap_kmer_size,
+                logger
+            )
 
             # optional coverage cap
             mapped_bam = tmpdir / "mapped.capped.bam"
@@ -343,11 +340,29 @@ def main():
                 else:
                     # for subsequent iterations, we need to re-map reads to the current reference
                     logger.info("Re-mapping reads for iteration %d-%d", i+1, j+1)
-                    map_reads(current_ref, args.reads, iter_bam, threads, args.minimap_window_size, args.minimap_kmer_size, logger)
+                    map_reads(
+                        current_ref,
+                        args.reads,
+                        iter_bam,
+                        threads,
+                        args.minimap_window_size,
+                        args.minimap_kmer_size,
+                        logger
+                    )
 
                 # call variants with Clair3
                 raw_vcf = tmpdir / f"iter_{it}.raw.vcf"
-                call_variants_with_clair3(current_ref, iter_bam, raw_vcf, args.clair3_model, threads, logger)
+                call_variants_with_clair3(
+                    current_ref,
+                    iter_bam,
+                    raw_vcf,
+                    tmpdir / f"clair3_out_{it}",
+                    args.clair3_model,
+                    args.min_depth,
+                    args.clair_chunk_size,
+                    threads,
+                    logger
+                )
 
                 # filter
                 filt_vcf = tmpdir / f"iter_{it}.filt.vcf"
