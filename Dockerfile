@@ -1,4 +1,4 @@
-FROM mambaorg/micromamba:1.4.5
+FROM mambaorg/micromamba:2.5.0
 
 WORKDIR /app
 
@@ -11,7 +11,7 @@ ENV MAMBA_NO_LOW_SPEED_LIMIT=1 \
 COPY env/env.yaml /tmp/env.yaml
 
 # create environment env from env.yaml
-RUN micromamba create -y -f /tmp/env.yaml && micromamba clean --all --yes
+RUN micromamba create -y -vv -f /tmp/env.yaml && micromamba clean --all --yes
 
 # Ensure the created environment's bin is on PATH
 #ENV PATH=/opt/conda/envs/rga/bin:$PATH

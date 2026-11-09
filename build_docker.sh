@@ -7,7 +7,10 @@ set -x
 IMAGE_NAME="rga:latest"
 
 echo "Building Docker image ${IMAGE_NAME}..."
-docker build --network=host --no-cache -t "${IMAGE_NAME}" .
+docker build \
+    --network=host \
+    --no-cache \
+    -t "${IMAGE_NAME}" . 2>&1 | tee build.log
 
 echo "Build complete. You can run the image with:"
 echo "  docker run --rm -v \$(pwd):/data ${IMAGE_NAME} --reference /data/ref.fasta --reads /data/reads.fastq --output /data/consensus.fasta"

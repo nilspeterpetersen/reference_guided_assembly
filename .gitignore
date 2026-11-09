@@ -1,3 +1,4 @@
 test_data/
 clair_models/clair3_models/
 .DS_Store
+build.log
