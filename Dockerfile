@@ -14,21 +14,17 @@ COPY env/env.yaml /tmp/env.yaml
 RUN micromamba create -y -f /tmp/env.yaml && micromamba clean --all --yes
 
 # Ensure the created environment's bin is on PATH
-ENV PATH=/opt/conda/envs/rga/bin:$PATH
+#ENV PATH=/opt/conda/envs/rga/bin:$PATH
+ENV ENV_NAME=env
 
-COPY clair_models/rerio/clair3_models/ /clair3_models/
-
-## clone rerio repository
-#RUN git clone https://github.com/nanoporetech/rerio.git
-
-## download rerio models
-#RUN python3 rerio/download_model.py --clair3
+COPY clair_models/clair3_models/ /clair3_models/
 
 # Copy the script
-#COPY assembly.py /app/assembly.py
+COPY assembly.py /app/assembly.py
 
 # Make /data a volume for inputs/outputs
-#VOLUME ["/data"]
+VOLUME ["/data"]
 
 # Default entrypoint: run the assembly script using the micromamba environment
-#ENTRYPOINT ["micromamba", "run", "-n", "rga", "--no-capture-output", "python", "/app/assembly.py"]
+#ENTRYPOINT ["micromamba", "run", "-n", "env", "--no-capture-output", "python", "/app/assembly.py"]
+ENTRYPOINT ["/usr/local/bin/_entrypoint.sh", "python", "/app/assembly.py"]

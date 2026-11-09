@@ -297,7 +297,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--minimap-kmer-size", type=int, default=11)
     p.add_argument("--output", "-o", type=Path, default=Path("consensus_genome.fasta"))
     p.add_argument("--min-depth", type=int, default=2)
-    p.add_argument("--min-quality", type=float, default=20.0)
+    p.add_argument("--min-quality", type=float, default=10.0)
     p.add_argument("--min-depth-final", type=int, default=10)
     p.add_argument("--max-iterations-inner", type=int, default=20)
     p.add_argument("--max-iterations-outer", type=int, default=5)
