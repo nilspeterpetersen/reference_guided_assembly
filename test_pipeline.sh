@@ -8,6 +8,7 @@ echo "Running with reference AY628201.1.fasta"
 docker run \
     --rm \
     -v $(pwd)/test_data:/data rga:latest \
+    rga \
     --reference /data/AY628201.1.fasta \
     --reads /data/reads.AY628201.1.fq \
     --output /data/output/consensus.AY628201.fasta \
@@ -21,6 +22,7 @@ echo "Running with reference NC_004296.1.fasta"
 docker run \
     --rm \
     -v $(pwd)/test_data:/data rga:latest \
+    rga \
     --reference /data/NC_004296.1.fasta \
     --reads /data/reads.AY628201.1.fq \
     --output /data/output/consensus.NC_004296.fasta \

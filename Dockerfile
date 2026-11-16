@@ -10,20 +10,26 @@ ENV MAMBA_NO_LOW_SPEED_LIMIT=1 \
 # Copy environment specifications
 COPY env/env.yaml /tmp/env.yaml
 
-# create environment env from env.yaml
-RUN micromamba create -y -vv -f /tmp/env.yaml && micromamba clean --all --yes
+# Create Conda environment
+RUN micromamba create -y -vv -f /tmp/env.yaml && \
+    micromamba clean --all --yes
 
-# Ensure the created environment's bin is on PATH
-#ENV PATH=/opt/conda/envs/rga/bin:$PATH
+# Select the environment
 ENV ENV_NAME=env
 
-COPY clair_models/clair3_models/ /clair3_models/
+# Copy Python package
+COPY --chown=mambauser:mambauser pyproject.toml README.md /app/
+COPY --chown=mambauser:mambauser src/ /app/src/
 
-# Copy the script
-COPY assembly.py /app/assembly.py
+# Install Python package into the Conda environment
+RUN micromamba run -n env \
+    python -m pip install --no-deps --no-build-isolation .
+
+# Copy Clair3 models
+COPY clair_models/clair3_models/ /clair3_models/
 
 # Make /data a volume for inputs/outputs
 VOLUME ["/data"]
 
-# Default entrypoint: run the assembly script using the micromamba environment
-ENTRYPOINT ["/usr/local/bin/_entrypoint.sh", "python", "/app/assembly.py"]
+# Run the installed CLI
+ENTRYPOINT ["/usr/local/bin/_entrypoint.sh"]

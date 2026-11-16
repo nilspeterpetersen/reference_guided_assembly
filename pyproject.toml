@@ -1,0 +1,17 @@
+[build-system]
+requires = ['setuptools', 'wheel']
+build-backend = 'setuptools.build_meta'
+
+[project]
+name = 'reference-guided-assembly'
+version = '0.1.0'
+description = 'Reference-guided viral genome assembly'
+readme = 'README.md'
+requires-python = '>=3.10'
+license = 'MIT'
+
+[project.scripts]
+rga = 'rga.assembly:main'
+
+[tool.setuptools.packages.find]
+where = ['src']

@@ -1,4 +1,8 @@
-# reference_guided_assembly — Docker usage
+# Iterative reference guided assembly
+
+This tool performs reference guided assembly and is intended to be used for viral genomes.
+
+## Docker
 
 Build the Docker image (from repository root):
 
@@ -18,7 +22,6 @@ Notes:
 - The container entrypoint uses `micromamba run -n rga python /app/assembly.py`, so any
   arguments passed to `docker run` are forwarded to `assembly.py`.
 - Building the image downloads and installs conda packages; the build can take several minutes.
-- If you prefer a different base image or want the image to be slimmer, I can switch to a multi-stage build or reduce packages.
 
 
 Example run
