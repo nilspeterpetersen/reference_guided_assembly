@@ -26,5 +26,4 @@ COPY assembly.py /app/assembly.py
 VOLUME ["/data"]
 
 # Default entrypoint: run the assembly script using the micromamba environment
-#ENTRYPOINT ["micromamba", "run", "-n", "env", "--no-capture-output", "python", "/app/assembly.py"]
 ENTRYPOINT ["/usr/local/bin/_entrypoint.sh", "python", "/app/assembly.py"]
