@@ -213,6 +213,8 @@ def filter_vcf(vcf_in: Path, vcf_out: Path, min_depth: int, min_qual: float, log
 
     written = 0
     for rec in invcf:
+        if 'PASS' not in rec.filter:  # TODO: replace? (quality is checked also manually, this was inserted to remove refcalls)
+            continue
         qual = rec.qual if rec.qual is not None else 0.0
         dp = None
         if "DP" in rec.info:
@@ -297,17 +299,25 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--minimap-kmer-size", type=int, default=11)
     p.add_argument("--output", "-o", type=Path, default=Path("consensus_genome.fasta"))
     p.add_argument("--min-depth", type=int, default=2)
-    p.add_argument("--min-quality", type=float, default=10.0)
+    p.add_argument("--min-quality", type=float, default=1.0)
     p.add_argument("--min-depth-final", type=int, default=10)
     p.add_argument("--max-iterations-inner", type=int, default=20)
     p.add_argument("--max-iterations-outer", type=int, default=5)
+    p.add_argument("--work", type=str, default=None, help="Working directory (default is an automatically created temporary directory)")
     p.add_argument("--threads", type=int, default=4)
+    p.add_argument("--keep-all", action="store_true", help="Keep all intermediate files for debugging")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
-    tmpdir = Path(tempfile.mkdtemp(prefix="rga_"))
+    
+    if args.work:
+        tmpdir = Path(args.work)
+        tmpdir.mkdir(exist_ok=True, parents=True)
+    else:
+        tmpdir = Path(tempfile.mkdtemp(prefix="rga_"))
+
     log_file = args.log_file if args.log_file is not None else tmpdir / "run.log"
     if args.log_file is None:
         logger_path_info = f" (temporary log: {log_file})"
@@ -356,14 +366,17 @@ def main():
                     logger.info("Using initial mapping for iteration %d-%d", i+1, j+1)
                     # for the first iteration, we can use the existing mapped bam and current_ref
                     # but we need to ensure it's sorted and indexed as expected by Clair3
-                    shutil.move(mapped_bam, iter_bam)
+                    if args.keep_all:
+                        shutil.copy2(mapped_bam, iter_bam)
+                    else:
+                        shutil.move(mapped_bam, iter_bam)
                     run(["samtools", "index", str(iter_bam)], logger)
                 else:
                     # for subsequent iterations, we need to re-map reads to the current reference
                     logger.info("Re-mapping reads for iteration %d-%d", i+1, j+1)
                     map_reads(
                         current_ref,
-                        args.reads,
+                        capped_reads,
                         iter_bam,
                         threads,
                         args.minimap_window_size,
@@ -400,12 +413,16 @@ def main():
                 # else set current_ref to consensus and continue
                 # write consensus to file used as reference for next iteration
                 next_ref = tmpdir / f"current_ref_iter_{it}.fa"
-                shutil.move(consensus, next_ref)
+                if args.keep_all:
+                    shutil.copy2(consensus, next_ref)
+                else:
+                    shutil.move(consensus, next_ref)
                 current_ref = next_ref
 
-                # delete temporary files from this iteration to save space
-                for f in tmpdir.glob(f"iter_{it}.*"):
-                    f.unlink()
+                if not args.keep_all:
+                    # delete temporary files from this iteration to save space
+                    for f in tmpdir.glob(f"iter_{it}.*"):
+                        f.unlink()
 
             if j == 0 and n_variants == 0:
                 logger.info(f"Consensus stabilized at iteration {i+1}-{j+1} with 0 variants; stopping outer loop")
